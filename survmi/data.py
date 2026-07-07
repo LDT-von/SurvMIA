@@ -54,12 +54,18 @@ class SurvivalOmicsCSVDataset(Dataset):
         omics_prefix: str = "gene:",
         max_patches: Optional[int] = None,
         seed: int = 7,
+        cache_dir: Optional[str | Path] = None,
     ):
         self.csv_path = Path(csv_path)
         self.root = Path(root) if root is not None else self.csv_path.parent
         self.omics_prefix = omics_prefix
         self.max_patches = max_patches
         self.generator = torch.Generator().manual_seed(seed)
+        # 磁盘缓存：第一轮把下采样后的小 patch 张量缓存成小文件，
+        # 之后每个 epoch 直接读小文件，避免重复 torch.load 整个 ~100MB 大文件。
+        self.cache_dir = Path(cache_dir) if cache_dir is not None else None
+        if self.cache_dir is not None:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.omics_log1p = False
         self.omics_mean: Optional[torch.Tensor] = None
         self.omics_std: Optional[torch.Tensor] = None
@@ -114,14 +120,40 @@ class SurvivalOmicsCSVDataset(Dataset):
             return str(row["slide_id"])[:12]
         return Path(row["patch_path"]).stem[:12]
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor | str]:
+    def _cache_path(self, idx: int) -> Optional[Path]:
+        if self.cache_dir is None:
+            return None
         row = self.rows[idx]
+        stem = Path(row["patch_path"]).stem
+        return self.cache_dir / f"{idx}_{stem}_mp{self.max_patches}.pt"
+
+    def _load_patches(self, idx: int) -> torch.Tensor:
+        row = self.rows[idx]
+        cache_path = self._cache_path(idx)
+        if cache_path is not None and cache_path.exists():
+            try:
+                return torch.load(cache_path, map_location="cpu")
+            except Exception:
+                pass  # 缓存损坏则回退到原始加载
+
         patches = load_tensor_file(_resolve_path(row["patch_path"], self.root))
         if patches.dim() != 2:
             raise ValueError(f"Expected patch features [num_patches, dim], got {patches.shape}")
         if self.max_patches is not None and patches.size(0) > self.max_patches:
             index = torch.randperm(patches.size(0), generator=self.generator)[: self.max_patches]
             patches = patches[index]
+        patches = patches.float().contiguous()
+
+        if cache_path is not None:
+            try:
+                torch.save(patches, cache_path)
+            except Exception:
+                pass  # 缓存写失败不影响训练
+        return patches
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor | str]:
+        row = self.rows[idx]
+        patches = self._load_patches(idx)
 
         return {
             "patches": patches.float(),

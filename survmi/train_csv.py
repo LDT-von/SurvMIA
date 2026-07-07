@@ -132,6 +132,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--out-dir", default="runs/core_csv")
     parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument(
+        "--cache-dir",
+        default=None,
+        help="下采样后的 patch 缓存目录。首轮加载后缓存小文件，之后每个 epoch 秒读，大幅加速。",
+    )
     parser.add_argument("--no-omics-log1p", action="store_true", help="Disable log1p before train-fit z-score")
     parser.add_argument("--no-omics-zscore", action="store_true", help="Disable train-fit omics z-score")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -141,7 +146,11 @@ def main() -> None:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    dataset = SurvivalOmicsCSVDataset(args.csv, root=args.root, max_patches=args.max_patches, seed=args.seed)
+    train_cache = (str(Path(args.cache_dir) / "train") if args.cache_dir else None)
+    val_cache = (str(Path(args.cache_dir) / "val") if args.cache_dir else None)
+    dataset = SurvivalOmicsCSVDataset(
+        args.csv, root=args.root, max_patches=args.max_patches, seed=args.seed, cache_dir=train_cache
+    )
     pathway_mask = load_pathway_mask(args.pathway_mask) if args.pathway_mask else None
     if pathway_mask is None:
         print("warning: no real pathway mask was provided; pathway tokens are learnable linear combinations.")
@@ -152,6 +161,7 @@ def main() -> None:
             root=args.val_root or args.root,
             max_patches=args.max_patches,
             seed=args.seed,
+            cache_dir=val_cache,
         )
         train_indices_for_stats = list(range(len(dataset)))
         split_cases = {
