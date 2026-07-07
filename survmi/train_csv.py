@@ -33,7 +33,7 @@ def build_model(wsi_dim: int, omics_dim: int, hidden_dim: int, pathway_mask=None
     )
 
 
-def run_epoch(model, loader, device, optimizer=None, risk_cutoff=None):
+def run_epoch(model, loader, device, optimizer=None, risk_cutoff=None, desc="train"):
     is_train = optimizer is not None
     model.train(is_train)
     loss_meter = RunningMean()
@@ -41,10 +41,12 @@ def run_epoch(model, loader, device, optimizer=None, risk_cutoff=None):
     times = []
     events = []
     slide_ids = []
+    n_batches = len(loader)
+    log_every = max(1, n_batches // 5)  # print ~5 times per epoch
 
     context = torch.enable_grad() if is_train else torch.no_grad()
     with context:
-        for batch in loader:
+        for i, batch in enumerate(loader):
             patches = batch["patches"].to(device)
             patch_mask = batch["patch_mask"].to(device)
             omics = batch["omics"].to(device)
@@ -67,6 +69,9 @@ def run_epoch(model, loader, device, optimizer=None, risk_cutoff=None):
             times.append(time.detach().cpu())
             events.append(event.detach().cpu())
             slide_ids.extend(batch["slide_id"])
+
+            if i == 0 or (i + 1) % log_every == 0:
+                print(f"  {desc} batch {i+1}/{n_batches} loss={losses['total'].item():.3f}", flush=True)
 
     risk = torch.cat(risks) if risks else torch.empty(0)
     time = torch.cat(times) if times else torch.empty(0)
@@ -229,6 +234,7 @@ def main() -> None:
             args.device,
             optimizer=optimizer,
             risk_cutoff=risk_cutoff,
+            desc="train",
         )
         log = {
             "epoch": epoch + 1,
@@ -237,7 +243,7 @@ def main() -> None:
         }
         msg = f"epoch={epoch + 1} train_loss={train_result['loss']:.4f} train_c={train_result['c_index']:.4f}"
         if val_loader is not None:
-            val_result = run_epoch(model, val_loader, args.device, risk_cutoff=risk_cutoff)
+            val_result = run_epoch(model, val_loader, args.device, risk_cutoff=risk_cutoff, desc="val")
             log.update({"val_loss": val_result["loss"], "val_c_index": val_result["c_index"]})
             msg += f" val_loss={val_result['loss']:.4f} val_c={val_result['c_index']:.4f}"
             if val_result["c_index"] == val_result["c_index"] and val_result["c_index"] > best_val_c:
