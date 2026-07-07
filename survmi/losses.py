@@ -166,3 +166,32 @@ def pair_level_patch_pathway_nce_loss(
 
     labels = torch.zeros(batch, dtype=torch.long, device=proto.device)
     return 0.5 * (F.cross_entropy(logits, labels) + F.cross_entropy(rev_logits, labels))
+
+
+def orthogonality_loss(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """惩罚两组 token 嵌入之间的对齐度（余弦平方），使 b 子空间与 a 正交。
+
+    用于把 conflict 通道约束为 agreement 通道的*残差*：agreement 解释掉的一致信息，
+    conflict 不再重复捕获，从而 conflict 只保留 agreement 无法解释的跨模态分歧。
+    a, b: [..., dim]，在最后一维上比较方向。
+    """
+    a = F.normalize(a, dim=-1)
+    b = F.normalize(b, dim=-1)
+    cos = (a * b).sum(dim=-1)
+    return cos.pow(2).mean()
+
+
+def pairwise_rank_loss(score: torch.Tensor, target: torch.Tensor, margin: float = 1e-4) -> torch.Tensor:
+    """成对排序损失：让 score 的大小顺序与 target 一致（target 越大 score 越大）。
+
+    这里用于把 conflict 分数对齐到两个模态风险头的分歧 |wsi_risk - omics_risk|，
+    使 conflict 分数成为"跨模态预后分歧强度"的可解释度量。
+    """
+    score = score.reshape(-1)
+    target = target.reshape(-1)
+    target_diff = target[:, None] - target[None, :]
+    valid = target_diff > margin
+    if not valid.any():
+        return score.sum() * 0.0
+    score_diff = score[:, None] - score[None, :]
+    return F.softplus(-score_diff[valid]).mean()

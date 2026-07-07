@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader, random_split
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from survmi import CorePatchPathwaySurvMI
+from survmi import PCBConfig, PrognosticConflictBottleneck
 from survmi.data import (
     SurvivalOmicsCSVDataset,
     compute_global_event_cutoff,
@@ -23,18 +23,17 @@ from survmi.data import (
 from survmi.metrics import RunningMean, concordance_index
 
 
-def build_model(name: str, wsi_dim: int, omics_dim: int, hidden_dim: int, latent_dim: int, pathway_mask=None):
-    if name == "core":
-        return CorePatchPathwaySurvMI(
-            wsi_dim=wsi_dim,
-            omics_dim=omics_dim,
-            hidden_dim=hidden_dim,
-            pathway_mask=pathway_mask,
-        )
-    raise ValueError(f"Unknown model: {name}")
+def build_model(wsi_dim: int, omics_dim: int, hidden_dim: int, pathway_mask=None, mode: str = "full"):
+    return PrognosticConflictBottleneck(
+        wsi_dim=wsi_dim,
+        omics_dim=omics_dim,
+        hidden_dim=hidden_dim,
+        pathway_mask=pathway_mask,
+        config=PCBConfig(mode=mode),
+    )
 
 
-def run_epoch(model, loader, device, optimizer=None, model_name="core", risk_cutoff=None):
+def run_epoch(model, loader, device, optimizer=None, risk_cutoff=None):
     is_train = optimizer is not None
     model.train(is_train)
     loss_meter = RunningMean()
@@ -109,7 +108,12 @@ def main() -> None:
     parser.add_argument("--val-csv", default=None, help="Optional validation CSV. If omitted, split --csv.")
     parser.add_argument("--root", default=None, help="Root directory for relative feature paths")
     parser.add_argument("--val-root", default=None, help="Root directory for validation CSV relative feature paths")
-    parser.add_argument("--model", choices=["core"], default="core")
+    parser.add_argument(
+        "--mode",
+        choices=["full", "agreement_only", "conflict_only"],
+        default="full",
+        help="消融开关：full=完整 PCB；agreement_only=对齐融合 baseline；conflict_only=仅冲突通道",
+    )
     parser.add_argument("--epochs", type=int, default=5)
     # Cox 偏似然的风险集只覆盖当前 batch。真实数据审查率高，batch 过小会导致
     # 每个 batch 只有 1-2 个事件、风险集估计噪声大且有偏，严重削弱学习信号。
@@ -193,7 +197,7 @@ def main() -> None:
     else:
         val_loader = None
 
-    model = build_model(args.model, wsi_dim, omics_dim, args.hidden_dim, args.latent_dim, pathway_mask).to(args.device)
+    model = build_model(wsi_dim, omics_dim, args.hidden_dim, pathway_mask, mode=args.mode).to(args.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     best_val_c = -1.0
     best_epoch = 0
@@ -224,7 +228,6 @@ def main() -> None:
             train_loader,
             args.device,
             optimizer=optimizer,
-            model_name=args.model,
             risk_cutoff=risk_cutoff,
         )
         log = {
@@ -234,7 +237,7 @@ def main() -> None:
         }
         msg = f"epoch={epoch + 1} train_loss={train_result['loss']:.4f} train_c={train_result['c_index']:.4f}"
         if val_loader is not None:
-            val_result = run_epoch(model, val_loader, args.device, model_name=args.model, risk_cutoff=risk_cutoff)
+            val_result = run_epoch(model, val_loader, args.device, risk_cutoff=risk_cutoff)
             log.update({"val_loss": val_result["loss"], "val_c_index": val_result["c_index"]})
             msg += f" val_loss={val_result['loss']:.4f} val_c={val_result['c_index']:.4f}"
             if val_result["c_index"] == val_result["c_index"] and val_result["c_index"] > best_val_c:
