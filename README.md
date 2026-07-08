@@ -1,98 +1,61 @@
-# SurvMI code scaffold
+# PPCB — Prognostic Conflict Bottleneck for WSI-omics Survival Analysis
 
-This folder contains a standalone PyTorch implementation scaffold for the
-information-theoretic WSI-omics survival ideas in
-`MI_Multimodal_Survival_Plans`.
+BLCA 5-fold CV 实验记录。结论：**这代码在 BLCA 上完全不好使，c-index 跟抛硬币差不多。**
 
-The code is intentionally isolated from existing baselines so it can be tested
-without changing other projects.
+## BLCA 实验结果
 
-## What is implemented
+| Fold | Val C-index |
+|------|------------|
+| 0 | 0.57 |
+| 1 | 0.54 |
+| 2 | 0.53 |
+| 3 | 0.55 |
+| 4 | 0.56 |
+| **Mean ± Std** | **0.55 ± 0.02** |
 
-The project keeps a single mainline model, `CorePatchPathwaySurvMI`
-(survival-conditioned patch-to-pathway MI selection). The earlier
-"five-module" variants (shared-specific IB, patch-pathway alignment,
-prognostic-conflict bottleneck, missing-modality completion) were removed
-per the reviewer-driven scope decision.
+- 基线（随机猜测）C-index = 0.50
+- 训练集 C-index 轻松上 0.93，验证集惨不忍睹 → 严重过拟合
+- 362 样本 × 17025 基因 × ~1M 参数，数据量根本撑不住
 
-- Mainline model: `CorePatchPathwaySurvMI` (`--model core`).
-- Cox proportional hazards loss.
-- Survival-risk-aware InfoNCE alignment (pair-level and global).
-- WSI morphology prototype pooling.
-- Pathway-level omics projector.
-- Synthetic-data smoke test.
+## 数据
 
-## Quick smoke test
+| 数据源 | 路径 |
+|--------|------|
+| 基因表达 | `E:\TCGA_Gene_Data\drive-download-20260702T030012Z-3-001\blca_rna_inter.csv` |
+| 5折划分 | `E:\TCGA-5fold\dataset_csv\splits\5fold\blca\fold_{0-4}.csv` |
+| WSI 特征 | `E:\TCGA-data\CPathPatchFeature\blca\uni\pt_files\*.pt` |
 
-```bash
-python scripts/smoke_train.py --model core --steps 5
+## 快速上手
+
+```powershell
+# 1. 生成 BLCA manifest + pathway mask（一次性）
+python -c "... 见 blca_manifest.csv 和 blca_pathway_mask.pt"
+
+# 2. 生成 5-fold CSV
+python -c "... 见 blca_fold*_train.csv 和 blca_fold*_val.csv"
+
+# 3. 训练（单折）
+python -u survmi/train_csv.py `
+    --csv blca_fold0_train.csv --val-csv blca_fold0_val.csv `
+    --pathway-mask blca_pathway_mask.pt `
+    --epochs 30 --batch-size 8 --max-patches 2048 --hidden-dim 128 `
+    --out-dir runs/blca_fold0
+
+# 4. 5-fold CV（自动跑5折并汇总）
+python -u run_5fold.py
 ```
 
-The smoke test uses random synthetic WSI patch features, omics vectors, and
-survival labels. It is only for checking tensor shapes, gradients, and loss
-plumbing. Real TCGA data loaders should be added after confirming the target
-feature layout.
+## 目录结构
 
-## CSV data format
-
-For real features, use `scripts/train_csv.py`. The CSV needs these columns:
-
-```text
-slide_id,patch_path,omics_path,time,event
-TCGA-XX-0001,/path/to/patch_features.pt,/path/to/rna.npy,10.5,1
 ```
-
-Instead of `omics_path`, you can also put gene columns directly in the CSV with
-a shared prefix:
-
-```text
-slide_id,patch_path,time,event,gene:TP53,gene:EGFR,gene:MYC
-```
-
-Run:
-
-```bash
-python scripts/train_csv.py --csv train.csv --model core --pathway-mask hallmark_mask.npy --out-dir runs/blca_core
-```
-
-For the `core` model, provide a real pathway mask whenever the omics vector is
-gene ordered. Pathway tokens include both patient-specific pathway activity and
-a learnable pathway identity embedding. Without `--pathway-mask`, pathway tokens
-are only learnable linear combinations and should be treated as a non-biological
-ablation.
-
-## Build a TCGA-style manifest
-
-If you have a patch feature directory, a clinical table, and a wide omics table,
-build the training CSV with:
-
-```bash
-python scripts/build_tcga_csv.py \
-  --patch-dir E:/TCGA-huggingface/uni/pt_files \
-  --clinical-csv clinical_blca.csv \
-  --omics-csv rna_blca.csv \
-  --case-col case_id \
-  --time-col time \
-  --event-col event \
-  --omics-case-col case_id \
-  --out-csv manifests/blca_uni_rna.csv \
-  --gene-list-out manifests/blca_genes.txt
-```
-
-`train_csv.py` records `history.jsonl`, `config.json`, `best.pt`, and
-`best_val_predictions.csv` in `--out-dir`.
-
-Important defaults:
-
-- Splits are patient-level by `case_id`, never slide-level.
-- Omics are transformed with train-fit `log1p + z-score` by default.
-- The risk-group cutoff is computed from the training split only.
-- Build pathway masks by gene name, not by position:
-
-```bash
-python scripts/build_pathway_mask.py \
-  --gmt h.all.v2025.1.Hs.symbols.gmt \
-  --genes manifests/blca_genes.txt \
-  --out-mask manifests/hallmark_mask.pt \
-  --out-pathways manifests/hallmark_pathways.json
+survmi/
+  models.py      # PrognosticConflictBottleneck 主模型
+  modules.py     # MorphologyPrototypePooler, PathwayProjector, MIGatedCrossAttention
+  losses.py      # Cox, InfoNCE, orthogonality, pairwise rank
+  metrics.py     # concordance_index
+  data.py        # SurvivalOmicsCSVDataset
+  train_csv.py   # 训练入口
+  smoke_train.py # 合成数据冒烟测试
+run_5fold.py     # 5-fold CV 运行脚本
+test_pipeline.py # 端到端 pipeline 测试
 ```
