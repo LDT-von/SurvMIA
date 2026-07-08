@@ -9,9 +9,9 @@ import torch.nn.functional as F
 class MorphologyPrototypePooler(nn.Module):
     """Summarize many WSI patches into a fixed set of morphology prototypes."""
 
-    def __init__(self, in_dim: int, hidden_dim: int, num_prototypes: int):
+    def __init__(self, in_dim: int, hidden_dim: int, num_prototypes: int, dropout: float = 0.2):
         super().__init__()
-        self.patch_proj = nn.Linear(in_dim, hidden_dim)
+        self.patch_proj = nn.Sequential(nn.Linear(in_dim, hidden_dim), nn.Dropout(dropout), nn.LayerNorm(hidden_dim))
         self.prototypes = nn.Parameter(torch.randn(num_prototypes, hidden_dim) / math.sqrt(hidden_dim))
         self.norm = nn.LayerNorm(hidden_dim)
 
@@ -20,7 +20,7 @@ class MorphologyPrototypePooler(nn.Module):
         patches: torch.Tensor,
         mask: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        h = self.norm(self.patch_proj(patches))
+        h = self.patch_proj(patches)
         proto = F.normalize(self.prototypes, dim=-1)
         h_norm = F.normalize(h, dim=-1)
         logits = torch.einsum("kd,bnd->bkn", proto, h_norm) / math.sqrt(h.size(-1))
@@ -28,7 +28,7 @@ class MorphologyPrototypePooler(nn.Module):
             logits = logits.masked_fill(~mask[:, None, :].bool(), -torch.finfo(logits.dtype).max)
         assign = torch.softmax(logits, dim=-1)
         tokens = torch.einsum("bkn,bnd->bkd", assign, h)
-        return tokens, assign
+        return self.norm(tokens), assign
 
 
 class PathwayProjector(nn.Module):
@@ -41,6 +41,7 @@ class PathwayProjector(nn.Module):
         hidden_dim: int,
         num_pathways: int,
         pathway_mask: Optional[torch.Tensor] = None,
+        dropout: float = 0.2,
     ):
         super().__init__()
         self.num_pathways = num_pathways
@@ -55,6 +56,7 @@ class PathwayProjector(nn.Module):
         self.token_mlp = nn.Sequential(
             nn.Linear(1, hidden_dim),
             nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim, pathway_dim),
         )
         self.pathway_embed = nn.Parameter(torch.randn(num_pathways, pathway_dim) * 0.02)
@@ -70,7 +72,7 @@ class PathwayProjector(nn.Module):
 
 
 class MIGatedCrossAttention(nn.Module):
-    def __init__(self, dim: int, num_heads: int = 4, mi_gate: float = 1.0):
+    def __init__(self, dim: int, num_heads: int = 4, mi_gate: float = 1.0, dropout: float = 0.1):
         super().__init__()
         if dim % num_heads != 0:
             raise ValueError("dim must be divisible by num_heads")
@@ -81,7 +83,7 @@ class MIGatedCrossAttention(nn.Module):
         self.q = nn.Linear(dim, dim)
         self.k = nn.Linear(dim, dim)
         self.v = nn.Linear(dim, dim)
-        self.out = nn.Linear(dim, dim)
+        self.out = nn.Sequential(nn.Linear(dim, dim), nn.Dropout(dropout))
 
     def forward(
         self,

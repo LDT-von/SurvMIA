@@ -213,7 +213,7 @@ def main() -> None:
         val_loader = None
 
     model = build_model(wsi_dim, omics_dim, args.hidden_dim, pathway_mask, mode=args.mode).to(args.device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=3e-4)
     best_val_c = -1.0
     best_epoch = 0
 
